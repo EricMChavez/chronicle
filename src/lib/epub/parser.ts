@@ -110,16 +110,22 @@ export async function parseEpub(filePath: string): Promise<ParsedBook> {
 
 function extractTextFromHtml(html: string): string {
   return html
+    .replace(/\r\n?/g, "\n")              // normalize line endings first
     .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, "")
     .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, "")
-    .replace(/<[^>]+>/g, " ")
+    // Insert double newlines for block-level elements to preserve paragraph boundaries
+    .replace(/<\/?(?:p|div|br|h[1-6]|li|blockquote|section|article|header|footer|tr|hr)[^>]*\/?>/gi, "\n\n")
+    .replace(/<[^>]+>/g, " ")          // strip remaining inline tags
     .replace(/&nbsp;/g, " ")
     .replace(/&amp;/g, "&")
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    .replace(/\s+/g, " ")
+    .replace(/[^\S\n]+/g, " ")         // collapse horizontal whitespace (preserve newlines)
+    .replace(/\n{3,}/g, "\n\n")        // collapse excessive newlines to double
+    .replace(/^[^\S\n]+|[^\S\n]+$/gm, "")  // trim horizontal whitespace from each line
+    .replace(/\n{3,}/g, "\n\n")        // final pass after trimming
     .trim();
 }
 

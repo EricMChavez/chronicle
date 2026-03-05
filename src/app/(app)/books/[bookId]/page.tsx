@@ -7,6 +7,7 @@ import Link from "next/link";
 import { ChapterSelector } from "@/components/books/chapter-selector";
 import { ProcessingStatus } from "@/components/books/processing-status";
 import { ProcessBookButton } from "@/components/books/process-book-button";
+import { DeleteBookButton } from "@/components/books/delete-book-button";
 
 export default async function BookDetailPage({
   params,
@@ -136,6 +137,14 @@ export default async function BookDetailPage({
             </div>
           ))}
         </div>
+      </div>
+
+      {/* Delete book */}
+      <div className="mt-12 border-t border-zinc-800 pt-6">
+        <DeleteBookButton
+          bookId={bookId}
+          processingStatus={book.processingStatus}
+        />
       </div>
     </div>
   );

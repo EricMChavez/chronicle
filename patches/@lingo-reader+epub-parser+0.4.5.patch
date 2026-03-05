@@ -1,0 +1,24 @@
+diff --git a/node_modules/@lingo-reader/epub-parser/dist/index.node.js b/node_modules/@lingo-reader/epub-parser/dist/index.node.js
+index 52ea2dd..be2777e 100644
+--- a/node_modules/@lingo-reader/epub-parser/dist/index.node.js
++++ b/node_modules/@lingo-reader/epub-parser/dist/index.node.js
+@@ -449,6 +449,7 @@ function parseSpine(spineAST, manifest) {
+     const $ = itemref.$;
+     if ($.idref) {
+       const element = manifest[$.idref];
++      if (!element) continue;
+       spine.push({
+         ...element,
+         href: `epub:${element.href}`,
+diff --git a/node_modules/@lingo-reader/epub-parser/dist/index.node.mjs b/node_modules/@lingo-reader/epub-parser/dist/index.node.mjs
+index 3e22a9f..d7f19c9 100644
+--- a/node_modules/@lingo-reader/epub-parser/dist/index.node.mjs
++++ b/node_modules/@lingo-reader/epub-parser/dist/index.node.mjs
+@@ -447,6 +447,7 @@ function parseSpine(spineAST, manifest) {
+     const $ = itemref.$;
+     if ($.idref) {
+       const element = manifest[$.idref];
++      if (!element) continue;
+       spine.push({
+         ...element,
+         href: `epub:${element.href}`,

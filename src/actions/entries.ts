@@ -3,11 +3,11 @@
 import { auth } from "@/auth";
 import { db } from "@/lib/db";
 import { entries, readingProgress } from "@/lib/db/schema";
-import { eq, and, lte, or } from "drizzle-orm";
+import { eq, and, lte, or, like } from "drizzle-orm";
 
 export async function getVisibleEntries(
   bookId: string,
-  options?: { type?: string }
+  options?: { category?: string }
 ) {
   const session = await auth();
   if (!session?.user?.id) throw new Error("Unauthorized");
@@ -32,8 +32,9 @@ export async function getVisibleEntries(
     ),
   ];
 
-  if (options?.type) {
-    conditions.push(eq(entries.type, options.type as typeof entries.type.enumValues[number]));
+  if (options?.category) {
+    // Match entries whose category starts with the given top-level category
+    conditions.push(like(entries.category, `${options.category}%`));
   }
 
   const visibleEntries = await db.query.entries.findMany({
@@ -42,4 +43,28 @@ export async function getVisibleEntries(
   });
 
   return { entries: visibleEntries, currentChapter };
+}
+
+export async function getDistinctTopLevelCategories(bookId: string): Promise<string[]> {
+  const session = await auth();
+  if (!session?.user?.id) throw new Error("Unauthorized");
+
+  const allEntries = await db.query.entries.findMany({
+    where: and(
+      eq(entries.bookId, bookId),
+      or(
+        eq(entries.isPublic, true),
+        eq(entries.generatedBy, session.user.id)
+      )
+    ),
+    columns: { category: true },
+  });
+
+  const topLevels = new Set<string>();
+  for (const entry of allEntries) {
+    const topLevel = entry.category.split(">")[0].trim();
+    topLevels.add(topLevel);
+  }
+
+  return Array.from(topLevels).sort();
 }

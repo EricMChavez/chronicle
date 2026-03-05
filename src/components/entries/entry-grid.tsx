@@ -4,7 +4,7 @@ interface Entry {
   id: string;
   bookId: string;
   name: string;
-  type: string;
+  category: string;
   content: string;
   firstAppearanceChapter: number;
 }

@@ -1,4 +1,5 @@
-import "dotenv/config";
+import { config } from "dotenv";
+config({ path: ".env.local" });
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import {
@@ -8,7 +9,6 @@ import {
   entries,
   entryQuotes,
   entrySources,
-  entryConnections,
   readingProgress,
 } from "./schema";
 
@@ -72,25 +72,26 @@ async function seed() {
     });
   }
 
-  // Create sample entries
+  // Create sample entries (significance is now an integer 1-10)
   const [gatsbyEntry] = await db
     .insert(entries)
     .values({
       id: "entry-gatsby-001",
       bookId: sampleBook.id,
       name: "Jay Gatsby",
-      type: "character",
+      category: "Characters",
       aliases: ["Gatsby", "James Gatz"],
       firstAppearanceChapter: 1,
+      significance: 9,
       content: `**Jay Gatsby** · Character
 *Wealthy neighbor of Nick Carraway in West Egg*
 
 ## At a Glance
-A mysteriously wealthy man who throws extravagant parties at his West Egg mansion but is rarely seen at them himself.
+A mysteriously wealthy man who throws extravagant parties at his [West Egg] mansion but is rarely seen at them himself.
 
 <!-- chapter:1 -->
 ## What We Know
-- Lives in a sprawling Gothic mansion next to Nick's cottage
+- Lives in a sprawling Gothic mansion next to [Nick Carraway]'s cottage
 - Throws lavish parties every weekend
 
 <!-- chapter:3 -->
@@ -100,46 +101,47 @@ A mysteriously wealthy man who throws extravagant parties at his West Egg mansio
 
 <!-- chapter:5 -->
 ## Actions & Choices
-- Arrived at Nick's cottage for the tea with Daisy looking pale and terrified
-- Insisted on showing Daisy his house, his garden, his shirts`,
+- Arrived at [Nick Carraway]'s cottage for the tea with [Daisy Buchanan] looking pale and terrified
+- Insisted on showing [Daisy Buchanan] his house, his garden, his shirts`,
       isPublic: true,
       generatedBy: userId,
     })
     .returning();
 
-  const [nickEntry] = await db
+  await db
     .insert(entries)
     .values({
       id: "entry-nick-001",
       bookId: sampleBook.id,
       name: "Nick Carraway",
-      type: "character",
+      category: "Characters",
       aliases: ["Nick"],
       firstAppearanceChapter: 1,
+      significance: 8,
       content: `**Nick Carraway** · Character
-*The narrator, a bond salesman from Minnesota living in West Egg*
+*The narrator, a bond salesman from Minnesota living in [West Egg]*
 
 ## At a Glance
-A Yale-educated Midwesterner who moves to New York's West Egg in the summer of 1922 to learn the bond business.
+A Yale-educated Midwesterner who moves to New York's [West Egg] in the summer of 1922 to learn the bond business.
 
 <!-- chapter:1 -->
 ## What We Know
 - From a prominent Minnesota family
-- Rents a small cottage in West Egg next to Gatsby's mansion
-- Cousin of Daisy Buchanan`,
+- Rents a small cottage in [West Egg] next to [Jay Gatsby]'s mansion
+- Cousin of [Daisy Buchanan]`,
       isPublic: true,
       generatedBy: userId,
-    })
-    .returning();
+    });
 
-  const [westEggEntry] = await db
+  await db
     .insert(entries)
     .values({
       id: "entry-westegg-001",
       bookId: sampleBook.id,
       name: "West Egg",
-      type: "location",
+      category: "Locations > Long Island",
       firstAppearanceChapter: 1,
+      significance: 7,
       content: `**West Egg** · Location
 *A fictional village on Long Island representing new money*
 
@@ -149,22 +151,19 @@ The less fashionable of the two egg-shaped peninsulas on Long Island, home to th
 <!-- chapter:1 -->
 ## Description
 - Located on Long Island Sound, across the bay from East Egg
-- Home to Gatsby's mansion and Nick's cottage
+- Home to [Jay Gatsby]'s mansion and [Nick Carraway]'s cottage
 - Represents "new money" in contrast to East Egg's old wealth`,
       isPublic: true,
       generatedBy: userId,
-    })
-    .returning();
+    });
 
   // Create entry sources
   await db.insert(entrySources).values([
     {
       entryId: gatsbyEntry.id,
       chapter: 1,
-      observation: "Lives in a sprawling Gothic mansion next to Nick's cottage",
-      excerpt:
-        "The one on my right was a colossal affair by any standard — it was a factual imitation of some Hotel de Ville in Normandy.",
-      searchHint: "colossal affair by any standard factual imitation Hotel de Ville",
+      observation: "Lives in a sprawling Gothic mansion next to [Nick Carraway]'s cottage",
+      anchor: "colossal affair factual imitation",
       sectionHeading: "What We Know",
       sortOrder: 0,
     },
@@ -172,9 +171,7 @@ The less fashionable of the two egg-shaped peninsulas on Long Island, home to th
       entryId: gatsbyEntry.id,
       chapter: 3,
       observation: "Throws lavish parties every weekend that attract hundreds of strangers",
-      excerpt:
-        "There was music from my neighbor's house through the summer nights. In his blue gardens men and girls came and went like moths among the whisperings and the champagne and the stars.",
-      searchHint: "blue gardens men and girls came and went like moths",
+      anchor: "blue gardens men and girls",
       sectionHeading: "What We Know",
       sortOrder: 1,
     },
@@ -187,22 +184,6 @@ The less fashionable of the two egg-shaped peninsulas on Long Island, home to th
       text: "He stretched out his arms toward the dark water in a curious way, and, far as I was from him, I could have sworn he was trembling.",
       speaker: "narrator",
       context: "Nick observes Gatsby for the first time, reaching toward the green light across the bay.",
-      chapter: 1,
-    },
-  ]);
-
-  // Create entry connections
-  await db.insert(entryConnections).values([
-    {
-      sourceEntryId: gatsbyEntry.id,
-      targetEntryId: nickEntry.id,
-      description: "Neighbor and eventual confidant. Gatsby cultivates the friendship.",
-      chapter: 1,
-    },
-    {
-      sourceEntryId: nickEntry.id,
-      targetEntryId: westEggEntry.id,
-      description: "Nick rents a cottage in West Egg next to Gatsby's mansion.",
       chapter: 1,
     },
   ]);

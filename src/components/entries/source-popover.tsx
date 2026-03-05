@@ -4,15 +4,13 @@ import { useState } from "react";
 
 interface SourcePopoverProps {
   observation: string;
-  excerpt: string;
-  searchHint: string;
+  anchor: string;
   chapter: number;
 }
 
 export function SourcePopover({
   observation,
-  excerpt,
-  searchHint,
+  anchor,
   chapter,
 }: SourcePopoverProps) {
   const [open, setOpen] = useState(false);
@@ -29,24 +27,21 @@ export function SourcePopover({
       {open && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute left-0 top-full z-50 mt-2 w-80 rounded-lg border border-zinc-700 bg-zinc-800 p-4 shadow-xl">
-            <div className="mb-3">
-              <h4 className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
-                From the book
-              </h4>
-              <p className="text-sm italic text-zinc-300">
-                &ldquo;{excerpt}&rdquo;
-              </p>
-            </div>
-            <div className="border-t border-zinc-700 pt-3">
-              <h4 className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
-                Find in book
-              </h4>
-              <p className="text-xs text-zinc-400">
-                Ch. {chapter} &mdash; search for &ldquo;
-                <span className="text-amber-400">{searchHint}</span>&rdquo;
-              </p>
-            </div>
+          <div className="absolute left-0 top-full z-50 mt-2 w-72 rounded-lg border border-zinc-700 bg-zinc-800 p-4 shadow-xl">
+            {anchor && (
+              <div>
+                <h4 className="mb-1 text-xs font-medium uppercase tracking-wider text-zinc-500">
+                  Find in book
+                </h4>
+                <p className="text-xs text-zinc-400">
+                  Ch. {chapter} &mdash; search for &ldquo;
+                  <span className="text-amber-400">{anchor}</span>&rdquo;
+                </p>
+              </div>
+            )}
+            {!anchor && (
+              <p className="text-xs text-zinc-500">Ch. {chapter}</p>
+            )}
             <button
               onClick={() => setOpen(false)}
               className="absolute right-2 top-2 text-zinc-500 hover:text-zinc-300"

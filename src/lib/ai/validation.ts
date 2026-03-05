@@ -1,12 +1,111 @@
-import { extractionResponseSchema, type ExtractionResponse } from "@/lib/utils/validation";
+import {
+  createStructureResponseSchema,
+  detailResponseSchema,
+  type StructureResponse,
+  type DetailResponse,
+} from "@/lib/utils/validation";
 
-export function validateExtractionResponse(raw: string): ExtractionResponse {
-  const parsed = JSON.parse(raw);
-  return extractionResponseSchema.parse(parsed);
+/**
+ * Clean raw LLM output: strip code fences, extract JSON object.
+ */
+function cleanJsonResponse(raw: string): string {
+  if (!raw || raw.trim().length === 0) {
+    throw new SyntaxError("Empty response from AI model");
+  }
+
+  let cleaned = raw
+    .replace(/^```(?:json)?\s*[\r\n]*/i, "")
+    .replace(/[\r\n]*```\s*$/i, "")
+    .trim();
+
+  const firstBrace = cleaned.indexOf("{");
+  const lastBrace = cleaned.lastIndexOf("}");
+  if (firstBrace !== -1 && lastBrace > firstBrace) {
+    cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+  }
+
+  return cleaned;
+}
+
+/**
+ * Parse JSON with fallback: fix trailing commas, then try truncation repair.
+ */
+function parseJsonWithRepair(cleaned: string): unknown {
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const commaFixed = cleaned.replace(/,\s*([}\]])/g, "$1");
+    try {
+      return JSON.parse(commaFixed);
+    } catch {
+      const repaired = repairTruncatedJson(commaFixed);
+      console.warn(
+        "Response was truncated — recovered partial data from JSON"
+      );
+      return JSON.parse(repaired);
+    }
+  }
+}
+
+export function validateStructureResponse(raw: string, totalParagraphs?: number): StructureResponse {
+  const cleaned = cleanJsonResponse(raw);
+  const parsed = parseJsonWithRepair(cleaned);
+  return createStructureResponseSchema(totalParagraphs).parse(parsed);
+}
+
+export function validateDetailResponse(raw: string): DetailResponse {
+  const cleaned = cleanJsonResponse(raw);
+  const parsed = parseJsonWithRepair(cleaned);
+  return detailResponseSchema.parse(parsed);
+}
+
+/**
+ * Repairs truncated JSON by finding the last complete object at depth 2
+ * in the array and closing the structure.
+ */
+export function repairTruncatedJson(raw: string): string {
+  let depth = 0;
+  let inString = false;
+  let escape = false;
+  let lastEntityEnd = -1;
+
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i];
+
+    if (escape) {
+      escape = false;
+      continue;
+    }
+
+    if (ch === "\\" && inString) {
+      escape = true;
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+
+    if (inString) continue;
+
+    if (ch === "{" || ch === "[") depth++;
+    if (ch === "}" || ch === "]") depth--;
+
+    if (ch === "}" && depth === 2) {
+      lastEntityEnd = i;
+    }
+  }
+
+  if (lastEntityEnd > 0) {
+    return raw.substring(0, lastEntityEnd + 1) + "]}";
+  }
+
+  throw new SyntaxError("Cannot repair truncated JSON — no complete objects found");
 }
 
 export function validateQuoteLength(text: string): boolean {
-  return text.split(/\s+/).length <= 40;
+  return text.split(/\s+/).length <= 30;
 }
 
 export function validateChapterMarkers(content: string): number[] {

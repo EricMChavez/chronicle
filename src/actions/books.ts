@@ -5,7 +5,8 @@ import { db } from "@/lib/db";
 import { books, chapters } from "@/lib/db/schema";
 import { parseEpub } from "@/lib/epub/parser";
 import { fingerprintBook } from "@/lib/epub/metadata";
-import { eq, or } from "drizzle-orm";
+import { abortProcessing } from "@/lib/processing/abort-registry";
+import { eq, and, or } from "drizzle-orm";
 import { redirect } from "next/navigation";
 import { writeFile, unlink } from "fs/promises";
 import { join } from "path";
@@ -81,4 +82,24 @@ export async function uploadBook(formData: FormData) {
   } finally {
     await unlink(tempPath).catch(() => {});
   }
+}
+
+export async function deleteBook(bookId: string) {
+  const session = await auth();
+  if (!session?.user?.id) throw new Error("Unauthorized");
+
+  const book = await db.query.books.findFirst({
+    where: and(eq(books.id, bookId), eq(books.uploadedBy, session.user.id)),
+    columns: { id: true, processingStatus: true },
+  });
+
+  if (!book) throw new Error("Book not found");
+
+  if (book.processingStatus === "processing") {
+    abortProcessing(bookId);
+  }
+
+  await db.delete(books).where(eq(books.id, bookId));
+
+  redirect("/books");
 }

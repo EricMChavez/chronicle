@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1772580441164,
+      "tag": "0000_sloppy_eternity",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1772679164059,
+      "tag": "0001_dark_exodus",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1772938800000,
+      "tag": "0002_replace_type_with_category",
+      "breakpoints": true
+    }
+  ]
+}

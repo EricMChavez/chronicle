@@ -4,9 +4,9 @@ import { books, chapters, readingProgress } from "@/lib/db/schema";
 import { eq, and, asc } from "drizzle-orm";
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { getVisibleEntries } from "@/actions/entries";
+import { getVisibleEntries, getDistinctTopLevelCategories } from "@/actions/entries";
 import { EntryGrid } from "@/components/entries/entry-grid";
-import { EntryTypeFilter } from "@/components/entries/entry-type-filter";
+import { EntryCategoryFilter } from "@/components/entries/entry-category-filter";
 import { ChapterSelector } from "@/components/books/chapter-selector";
 import { filterContentByProgress } from "@/lib/utils/content-filter";
 
@@ -15,10 +15,10 @@ export default async function EntriesPage({
   searchParams,
 }: {
   params: Promise<{ bookId: string }>;
-  searchParams: Promise<{ type?: string }>;
+  searchParams: Promise<{ category?: string }>;
 }) {
   const { bookId } = await params;
-  const { type } = await searchParams;
+  const { category } = await searchParams;
   const session = await auth();
   if (!session?.user?.id) return null;
 
@@ -42,9 +42,10 @@ export default async function EntriesPage({
 
   const currentChapter = progress?.currentChapter ?? 1;
 
-  const { entries } = await getVisibleEntries(bookId, {
-    type: type || undefined,
-  });
+  const [{ entries }, categories] = await Promise.all([
+    getVisibleEntries(bookId, { category: category || undefined }),
+    getDistinctTopLevelCategories(bookId),
+  ]);
 
   // Filter entry content by progress for preview
   const filteredEntries = entries.map((entry) => ({
@@ -75,7 +76,7 @@ export default async function EntriesPage({
       </div>
 
       <div className="mb-6">
-        <EntryTypeFilter bookId={bookId} />
+        <EntryCategoryFilter bookId={bookId} categories={categories} />
       </div>
 
       <EntryGrid entries={filteredEntries} />

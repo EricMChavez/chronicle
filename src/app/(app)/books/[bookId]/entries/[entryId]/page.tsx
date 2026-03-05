@@ -3,7 +3,6 @@ import { db } from "@/lib/db";
 import {
   books,
   entries,
-  entryConnections,
   entryQuotes,
   entrySources,
   readingProgress,
@@ -47,7 +46,7 @@ export default async function EntryDetailPage({
   if (entry.firstAppearanceChapter > currentChapter) notFound();
 
   // Fetch related data
-  const [sources, quotes, connections, bookChapters] = await Promise.all([
+  const [sources, quotes, bookChapters] = await Promise.all([
     db.query.entrySources.findMany({
       where: eq(entrySources.entryId, entryId),
       orderBy: (s, { asc }) => [asc(s.chapter), asc(s.sortOrder)],
@@ -56,31 +55,12 @@ export default async function EntryDetailPage({
       where: eq(entryQuotes.entryId, entryId),
       orderBy: (q, { asc }) => [asc(q.chapter)],
     }),
-    db.query.entryConnections.findMany({
-      where: eq(entryConnections.sourceEntryId, entryId),
-    }),
     db.query.chapters.findMany({
       where: eq(db._.fullSchema!.chapters.bookId, bookId),
       orderBy: (c, { asc }) => [asc(c.chapterNumber)],
       columns: { chapterNumber: true, title: true },
     }),
   ]);
-
-  // Resolve target entries for connections
-  const connectionsWithTargets = await Promise.all(
-    connections.map(async (conn) => {
-      const target = await db.query.entries.findFirst({
-        where: eq(entries.id, conn.targetEntryId),
-        columns: { id: true, name: true, type: true, firstAppearanceChapter: true },
-      });
-      return {
-        id: conn.id,
-        description: conn.description,
-        chapter: conn.chapter,
-        targetEntry: target!,
-      };
-    })
-  );
 
   const filteredContent = filterContentByProgress(
     entry.content,
@@ -109,9 +89,6 @@ export default async function EntryDetailPage({
         currentChapter={currentChapter}
         sources={sources}
         quotes={quotes}
-        connections={connectionsWithTargets.filter(
-          (c) => c.targetEntry !== null
-        )}
       />
     </div>
   );

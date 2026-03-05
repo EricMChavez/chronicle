@@ -6,9 +6,9 @@ import {
   books,
   chapters,
   entries,
-  entryConnections,
   entryQuotes,
   entrySources,
+  chapterSummaries,
   readingProgress,
   apiKeys,
 } from "./schema";
@@ -37,6 +37,7 @@ export const booksRelations = drizzleRelations(books, ({ one, many }) => ({
   }),
   chapters: many(chapters),
   entries: many(entries),
+  chapterSummaries: many(chapterSummaries),
   readingProgress: many(readingProgress),
 }));
 
@@ -50,27 +51,9 @@ export const entriesRelations = drizzleRelations(entries, ({ one, many }) => ({
     fields: [entries.generatedBy],
     references: [users.id],
   }),
-  outgoingConnections: many(entryConnections, { relationName: "source" }),
-  incomingConnections: many(entryConnections, { relationName: "target" }),
   quotes: many(entryQuotes),
   sources: many(entrySources),
 }));
-
-export const entryConnectionsRelations = drizzleRelations(
-  entryConnections,
-  ({ one }) => ({
-    sourceEntry: one(entries, {
-      fields: [entryConnections.sourceEntryId],
-      references: [entries.id],
-      relationName: "source",
-    }),
-    targetEntry: one(entries, {
-      fields: [entryConnections.targetEntryId],
-      references: [entries.id],
-      relationName: "target",
-    }),
-  })
-);
 
 export const entryQuotesRelations = drizzleRelations(
   entryQuotes,
@@ -110,6 +93,16 @@ export const apiKeysRelations = drizzleRelations(apiKeys, ({ one }) => ({
   user: one(users, { fields: [apiKeys.userId], references: [users.id] }),
 }));
 
+export const chapterSummariesRelations = drizzleRelations(
+  chapterSummaries,
+  ({ one }) => ({
+    book: one(books, {
+      fields: [chapterSummaries.bookId],
+      references: [books.id],
+    }),
+  })
+);
+
 export const relations = {
   usersRelations,
   accountsRelations,
@@ -117,9 +110,9 @@ export const relations = {
   booksRelations,
   chaptersRelations,
   entriesRelations,
-  entryConnectionsRelations,
   entryQuotesRelations,
   entrySourcesRelations,
+  chapterSummariesRelations,
   readingProgressRelations,
   apiKeysRelations,
 };

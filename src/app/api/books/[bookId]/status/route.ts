@@ -20,13 +20,56 @@ export async function GET(
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
+
       const send = (data: Record<string, unknown>) => {
-        controller.enqueue(
-          encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
-        );
+        if (closed) return;
+        try {
+          controller.enqueue(
+            encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
+          );
+        } catch {
+          closed = true;
+          clearInterval(interval);
+        }
       };
 
-      let running = true;
+      const close = () => {
+        if (closed) return;
+        closed = true;
+        clearInterval(interval);
+        try {
+          controller.close();
+        } catch {
+          // Controller already closed by client disconnect
+        }
+      };
+
+      // Send initial status immediately
+      const book = await db.query.books.findFirst({
+        where: eq(books.id, bookId),
+      });
+      if (!book) {
+        send({ error: "Book not found" });
+        close();
+        return;
+      }
+
+      send({
+        status: book.processingStatus,
+        progress: book.processingProgress,
+        totalChapters: book.totalChapters,
+        error: book.processingError,
+      });
+
+      if (
+        book.processingStatus === "completed" ||
+        book.processingStatus === "failed"
+      ) {
+        close();
+        return;
+      }
+
       const interval = setInterval(async () => {
         try {
           const book = await db.query.books.findFirst({
@@ -35,9 +78,7 @@ export async function GET(
 
           if (!book) {
             send({ error: "Book not found" });
-            running = false;
-            clearInterval(interval);
-            controller.close();
+            close();
             return;
           }
 
@@ -52,31 +93,12 @@ export async function GET(
             book.processingStatus === "completed" ||
             book.processingStatus === "failed"
           ) {
-            running = false;
-            clearInterval(interval);
-            controller.close();
+            close();
           }
         } catch {
-          if (running) {
-            running = false;
-            clearInterval(interval);
-            controller.close();
-          }
+          close();
         }
       }, 2000);
-
-      // Send initial status immediately
-      const book = await db.query.books.findFirst({
-        where: eq(books.id, bookId),
-      });
-      if (book) {
-        send({
-          status: book.processingStatus,
-          progress: book.processingProgress,
-          totalChapters: book.totalChapters,
-          error: book.processingError,
-        });
-      }
     },
   });
 

@@ -4,6 +4,7 @@ import { db } from "@/lib/db";
 import { books, apiKeys } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 import { runFullProcessing } from "@/lib/processing/book-processor";
+import { createAbortController } from "@/lib/processing/abort-registry";
 import type { ProviderName } from "@/lib/ai/provider";
 
 export async function POST(
@@ -49,6 +50,7 @@ export async function POST(
   }
 
   // Start processing in the background using waitUntil pattern
+  const abortController = createAbortController(bookId);
   const processingPromise = runFullProcessing(
     bookId,
     provider,
@@ -57,7 +59,8 @@ export async function POST(
       iv: keyRecord.iv,
       authTag: keyRecord.authTag,
     },
-    session.user.id
+    session.user.id,
+    abortController.signal
   ).catch((error) => {
     console.error("Processing failed:", error);
   });
