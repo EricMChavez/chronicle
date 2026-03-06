@@ -1,6 +1,6 @@
 import { db } from "@/lib/db";
-import { books, chapters, entries, entryQuotes, entrySources, chapterSummaries } from "@/lib/db/schema";
-import { eq, asc } from "drizzle-orm";
+import { books, chapters, chapterExtractions, entries, entryQuotes, entrySources, chapterSummaries } from "@/lib/db/schema";
+import { eq, and, asc } from "drizzle-orm";
 import { decrypt } from "@/lib/crypto/encryption";
 import { AnthropicProvider } from "@/lib/ai/anthropic";
 import { OpenAIProvider } from "@/lib/ai/openai";
@@ -15,9 +15,8 @@ import {
   buildSummaryUserMessage,
 } from "@/lib/ai/prompts/extraction";
 import { structureJsonSchema, detailJsonSchema } from "@/lib/ai/schemas";
-import { buildSynthesisPrompt } from "@/lib/ai/prompts/synthesis";
 import { validateStructureResponse, validateDetailResponse, deduplicateEntities } from "@/lib/ai/validation";
-import type { ExtractionEntity, StructureSubject } from "@/lib/utils/validation";
+import type { ExtractionEntity, StructureSubject, ContentBlock } from "@/lib/utils/validation";
 import { clearAbortController } from "./abort-registry";
 import { writeFile, mkdir } from "fs/promises";
 import path from "path";
@@ -27,7 +26,6 @@ const DEBUG_DIR = path.join(process.cwd(), ".chronicle-debug");
 
 // --- Concurrency & batching constants ---
 const DETAIL_CONCURRENCY = 3;
-const SYNTHESIS_CONCURRENCY = 5;
 const OUTPUT_TOKEN_BUDGET = 3200; // ~78% of 4096
 
 async function pMap<T, R>(
@@ -106,47 +104,32 @@ interface ApiKeyRecord {
 interface UsageTracker {
   structureCalls: number;
   detailCalls: number;
-  synthesisCalls: number;
   extractionPromptTokens: number;
   extractionCompletionTokens: number;
-  synthesisPromptTokens: number;
-  synthesisCompletionTokens: number;
 }
 
 function createUsageTracker(): UsageTracker {
   return {
     structureCalls: 0,
     detailCalls: 0,
-    synthesisCalls: 0,
     extractionPromptTokens: 0,
     extractionCompletionTokens: 0,
-    synthesisPromptTokens: 0,
-    synthesisCompletionTokens: 0,
   };
 }
 
-function trackUsage(tracker: UsageTracker, phase: "structure" | "detail" | "synthesis", response: AIResponse): void {
-  if (phase === "synthesis") {
-    tracker.synthesisCalls++;
-    tracker.synthesisPromptTokens += response.usage?.promptTokens ?? 0;
-    tracker.synthesisCompletionTokens += response.usage?.completionTokens ?? 0;
-  } else {
-    if (phase === "structure") tracker.structureCalls++;
-    else tracker.detailCalls++;
-    tracker.extractionPromptTokens += response.usage?.promptTokens ?? 0;
-    tracker.extractionCompletionTokens += response.usage?.completionTokens ?? 0;
-  }
+function trackUsage(tracker: UsageTracker, phase: "structure" | "detail", response: AIResponse): void {
+  if (phase === "structure") tracker.structureCalls++;
+  else tracker.detailCalls++;
+  tracker.extractionPromptTokens += response.usage?.promptTokens ?? 0;
+  tracker.extractionCompletionTokens += response.usage?.completionTokens ?? 0;
 }
 
 function logUsageSummary(tracker: UsageTracker): void {
-  const totalPrompt = tracker.extractionPromptTokens + tracker.synthesisPromptTokens;
-  const totalCompletion = tracker.extractionCompletionTokens + tracker.synthesisCompletionTokens;
   console.log(
     `[Chronicle] Processing complete — ` +
     `Extraction: ${tracker.structureCalls} structure + ${tracker.detailCalls} detail calls, ` +
     `${tracker.extractionPromptTokens} prompt / ${tracker.extractionCompletionTokens} completion tokens | ` +
-    `Synthesis: ${tracker.synthesisCalls} calls, ${tracker.synthesisPromptTokens} prompt / ${tracker.synthesisCompletionTokens} completion tokens | ` +
-    `Total: ${totalPrompt + totalCompletion} tokens (${totalPrompt} prompt + ${totalCompletion} completion)`
+    `Total: ${tracker.extractionPromptTokens + tracker.extractionCompletionTokens} tokens`
   );
 }
 
@@ -350,12 +333,15 @@ async function extractDetails(
   paragraphTexts: Map<number, string>,
   allSubjectNames: string[],
   tracker?: UsageTracker,
-  batchIndex?: number
+  batchIndex?: number,
+  previousBlocks?: Map<string, ContentBlock[]>
 ): Promise<ExtractionEntity[]> {
-  const systemPrompt = buildDetailExtractionPrompt(title, author, chapterNumber, allSubjectNames);
+  const hasPrevious = previousBlocks && previousBlocks.size > 0;
+  const systemPrompt = buildDetailExtractionPrompt(title, author, chapterNumber, allSubjectNames, hasPrevious);
   const userMessage = buildDetailUserMessage(
     batch.map((s) => ({ name: s.name, category: s.category, paragraphs: s.paragraphs })),
-    paragraphTexts
+    paragraphTexts,
+    previousBlocks
   );
 
   // Dynamic maxTokens based on batch estimated output cost
@@ -406,9 +392,7 @@ async function extractDetails(
           category: structSubject?.category ?? "Other",
           significance: structSubject?.significance ?? 5,
           tags: structSubject?.tags ?? [],
-          summary: detail.summary ?? "",
-          observations: detail.observations,
-          quotes: detail.quotes,
+          blocks: detail.blocks,
         };
       });
     } catch (error) {
@@ -438,7 +422,8 @@ export async function extractChapter(
   chapterText: string,
   tracker?: UsageTracker,
   existingManifest?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  previousResults?: ChapterExtractionResult[]
 ): Promise<ChapterExtractionResult> {
   const chunks = splitChapter(chapterText);
 
@@ -451,7 +436,7 @@ export async function extractChapter(
     for (const chunk of chunks) {
       checkAborted(signal);
       const result = await extractChapterSinglePass(
-        provider, title, author, chapterNumber, chunk, tracker, existingManifest
+        provider, title, author, chapterNumber, chunk, tracker, existingManifest, previousResults
       );
       chunkResults.push(result);
     }
@@ -465,7 +450,7 @@ export async function extractChapter(
   }
 
   return extractChapterSinglePass(
-    provider, title, author, chapterNumber, chapterText, tracker, existingManifest
+    provider, title, author, chapterNumber, chapterText, tracker, existingManifest, previousResults
   );
 }
 
@@ -475,6 +460,45 @@ export async function extractChapter(
  * Step 2: Structure discovery
  * Step 3: Batched detail extraction
  */
+/**
+ * Build a map of subject name (lowercase) -> ContentBlock[] from previous extraction results.
+ * Includes the first chapter + last 3 chapters' blocks per subject to manage token budget.
+ */
+function buildPreviousBlocksMap(
+  previousResults: ChapterExtractionResult[]
+): Map<string, ContentBlock[]> {
+  const allBySubject = new Map<string, { chapter: number; blocks: ContentBlock[] }[]>();
+
+  for (const result of previousResults) {
+    for (const entity of result.entities) {
+      const key = entity.name.toLowerCase();
+      if (!allBySubject.has(key)) allBySubject.set(key, []);
+      allBySubject.get(key)!.push({
+        chapter: result.chapterNumber,
+        blocks: entity.blocks,
+      });
+    }
+  }
+
+  const result = new Map<string, ContentBlock[]>();
+  for (const [key, chapterEntries] of allBySubject) {
+    // Sort by chapter number
+    chapterEntries.sort((a, b) => a.chapter - b.chapter);
+    // Keep first chapter + last 3 chapters
+    const selected: typeof chapterEntries = [];
+    if (chapterEntries.length > 0) {
+      selected.push(chapterEntries[0]);
+      const tail = chapterEntries.slice(-3);
+      for (const entry of tail) {
+        if (!selected.includes(entry)) selected.push(entry);
+      }
+    }
+    result.set(key, selected.flatMap((e) => e.blocks));
+  }
+
+  return result;
+}
+
 async function extractChapterSinglePass(
   provider: AIProvider,
   title: string,
@@ -482,7 +506,8 @@ async function extractChapterSinglePass(
   chapterNumber: number,
   chapterText: string,
   tracker?: UsageTracker,
-  existingManifest?: string
+  existingManifest?: string,
+  previousResults?: ChapterExtractionResult[]
 ): Promise<ChapterExtractionResult> {
   // Step 1: Number paragraphs
   const { numbered, paragraphs } = numberParagraphs(chapterText);
@@ -505,6 +530,11 @@ async function extractChapterSinglePass(
     };
   }
 
+  // Build previous blocks map for incremental extraction
+  const prevBlocks = previousResults && previousResults.length > 0
+    ? buildPreviousBlocksMap(previousResults)
+    : undefined;
+
   // Step 3: Batched detail extraction (parallel, locality-grouped)
   const batches = batchByParagraphLocality(structure.subjects);
   const allSubjectNames = structure.subjects.map((s) => s.name);
@@ -513,7 +543,7 @@ async function extractChapterSinglePass(
     try {
       return await extractDetails(
         provider, title, author, chapterNumber,
-        batch, paragraphs, allSubjectNames, tracker, batchIdx
+        batch, paragraphs, allSubjectNames, tracker, batchIdx, prevBlocks
       );
     } catch (batchError) {
       console.warn(
@@ -527,9 +557,7 @@ async function extractChapterSinglePass(
         category: s.category,
         significance: s.significance,
         tags: s.tags ?? [],
-        summary: "",
-        observations: [],
-        quotes: [],
+        blocks: [],
       }));
     }
   }, DETAIL_CONCURRENCY);
@@ -542,7 +570,7 @@ async function extractChapterSinglePass(
   };
 }
 
-// --- Entity grouping & synthesis ---
+// --- Entity grouping & compilation ---
 
 interface GroupedEntity {
   name: string;
@@ -552,9 +580,7 @@ interface GroupedEntity {
   tags: string[];
   chapterData: {
     chapterNumber: number;
-    summary: string;
-    observations: { fact: string; anchor: string }[];
-    quotes: { text: string; speaker: string; context: string }[];
+    blocks: ContentBlock[];
   }[];
 }
 
@@ -628,12 +654,7 @@ function groupExtractionsByEntity(
 
       group.chapterData.push({
         chapterNumber: result.chapterNumber,
-        summary: entity.summary ?? "",
-        observations: entity.observations.map((o) => ({
-          fact: o.fact,
-          anchor: o.anchor,
-        })),
-        quotes: entity.quotes || [],
+        blocks: entity.blocks,
       });
     }
   }
@@ -641,40 +662,103 @@ function groupExtractionsByEntity(
   return Array.from(entityMap.values());
 }
 
-export async function synthesizeEntry(
-  provider: AIProvider,
-  entity: GroupedEntity,
-  title: string,
-  author: string | null,
-  tracker?: UsageTracker
-): Promise<string> {
-  const prompt = buildSynthesisPrompt(
-    entity.name,
-    entity.category,
-    title,
-    author,
-    entity.chapterData.map((ch) => ({
-      chapterNumber: ch.chapterNumber,
-      summary: ch.summary,
-      observations: ch.observations,
-      quotes: ch.quotes,
-    }))
-  );
+// --- Primary section headings per top-level category ---
 
-  // Dynamic maxTokens: 4096 default, 6144 for entities spanning 15+ chapters
-  const chapterCount = entity.chapterData.length;
-  const maxTokens = chapterCount >= 15 ? 6144 : 4096;
+const PRIMARY_HEADINGS: Record<string, string> = {
+  characters: "What We Know",
+  locations: "Description",
+  events: "What Happened",
+  factions: "Who They Are",
+  items: "Description",
+  themes: "Where It Appears",
+  other: "What We Know",
+};
 
-  const response = await provider.generateCompletion(
-    [
-      { role: "system", content: prompt },
-      { role: "user", content: "Write the entry now." },
-    ],
-    { temperature: 0.3, maxTokens }
-  );
+function getPrimaryHeading(category: string): string {
+  const topLevel = category.split(">")[0].trim().toLowerCase();
+  return PRIMARY_HEADINGS[topLevel] || PRIMARY_HEADINGS.other;
+}
 
-  if (tracker) trackUsage(tracker, "synthesis", response);
-  return response.content;
+/**
+ * Compile a GroupedEntity into markdown content deterministically (no AI call).
+ */
+export function compileEntry(entity: GroupedEntity): string {
+  const lines: string[] = [];
+
+  // Header
+  lines.push(`**${entity.name}** · ${entity.category}`);
+  lines.push("");
+
+  // Find the earliest summary block for the italic identification line and At a Glance
+  const allSummaries = entity.chapterData
+    .sort((a, b) => a.chapterNumber - b.chapterNumber)
+    .flatMap((ch) => ch.blocks.filter((b): b is ContentBlock & { type: "summary" } => b.type === "summary"));
+
+  if (allSummaries.length > 0) {
+    // Italic one-liner: first sentence of earliest summary
+    const firstSentence = allSummaries[0].text.split(/(?<=[.!?])\s+/)[0];
+    lines.push(`*${firstSentence}*`);
+    lines.push("");
+
+    // At a Glance
+    lines.push("## At a Glance");
+    lines.push(allSummaries[0].text);
+    lines.push("");
+  }
+
+  // Chapter sections
+  const primaryHeading = getPrimaryHeading(entity.category);
+  let headingEmitted = false;
+
+  for (const ch of entity.chapterData) {
+    const summaries = ch.blocks.filter((b) => b.type === "summary");
+    const appearances = ch.blocks.filter((b) => b.type === "appearance");
+    const observations = ch.blocks.filter((b) => b.type === "observation");
+    const quotes = ch.blocks.filter((b) => b.type === "quote");
+
+    // Skip chapters with no content blocks
+    if (summaries.length === 0 && appearances.length === 0 && observations.length === 0 && quotes.length === 0) {
+      continue;
+    }
+
+    lines.push(`<!-- chapter:${ch.chapterNumber} -->`);
+
+    // Emit the primary heading once (on the first chapter with content after At a Glance)
+    if (!headingEmitted) {
+      lines.push(`## ${primaryHeading}`);
+      headingEmitted = true;
+    }
+
+    // Summary blocks as prose
+    for (const s of summaries) {
+      // Skip the first summary if it's the same as At a Glance (chapter 1)
+      if (s === allSummaries[0]) continue;
+      lines.push(s.text);
+      lines.push("");
+    }
+
+    // Appearance blocks in italics
+    for (const a of appearances) {
+      lines.push(`*${a.text}*`);
+      lines.push("");
+    }
+
+    // Observation blocks as bullets
+    for (const o of observations) {
+      lines.push(`- ${o.text}`);
+    }
+    if (observations.length > 0) lines.push("");
+
+    // Quote blocks
+    for (const q of quotes) {
+      const speaker = "speaker" in q ? q.speaker : "narrator";
+      const context = "context" in q && q.context ? ` (${q.context})` : "";
+      lines.push(`> "${q.text}" — ${speaker}${context}`);
+      lines.push("");
+    }
+  }
+
+  return lines.join("\n").trim();
 }
 
 export async function processChapterBatch(
@@ -783,6 +867,194 @@ function updateManifest(
   }
 }
 
+/**
+ * Save a single chapter's extraction result to the DB (upsert).
+ */
+async function saveChapterExtraction(
+  bookId: string,
+  result: ChapterExtractionResult
+): Promise<void> {
+  // Upsert into chapterExtractions
+  const existing = await db.query.chapterExtractions.findFirst({
+    where: and(
+      eq(chapterExtractions.bookId, bookId),
+      eq(chapterExtractions.chapterNumber, result.chapterNumber)
+    ),
+  });
+  if (existing) {
+    await db
+      .update(chapterExtractions)
+      .set({ data: result, createdAt: new Date() })
+      .where(eq(chapterExtractions.id, existing.id));
+  } else {
+    await db.insert(chapterExtractions).values({
+      bookId,
+      chapterNumber: result.chapterNumber,
+      data: result,
+    });
+  }
+
+  // Upsert chapter summary
+  if (result.chapterSummary) {
+    const existingSummary = await db.query.chapterSummaries.findFirst({
+      where: and(
+        eq(chapterSummaries.bookId, bookId),
+        eq(chapterSummaries.chapterNumber, result.chapterNumber)
+      ),
+    });
+    if (existingSummary) {
+      await db
+        .update(chapterSummaries)
+        .set({ summary: result.chapterSummary })
+        .where(eq(chapterSummaries.id, existingSummary.id));
+    } else {
+      await db.insert(chapterSummaries).values({
+        bookId,
+        chapterNumber: result.chapterNumber,
+        summary: result.chapterSummary,
+      });
+    }
+  }
+}
+
+/**
+ * Load saved chapter extractions from the DB and rebuild manifest.
+ */
+async function loadSavedExtractions(
+  bookId: string
+): Promise<{
+  results: ChapterExtractionResult[];
+  manifest: Map<string, ManifestEntry>;
+}> {
+  const saved = await db.query.chapterExtractions.findMany({
+    where: eq(chapterExtractions.bookId, bookId),
+    orderBy: [asc(chapterExtractions.chapterNumber)],
+  });
+
+  const results: ChapterExtractionResult[] = [];
+  const manifest = new Map<string, ManifestEntry>();
+
+  for (const row of saved) {
+    const data = row.data as ChapterExtractionResult;
+    results.push(data);
+    updateManifest(manifest, data.chapterNumber, data.entities);
+  }
+
+  return { results, manifest };
+}
+
+/**
+ * Compilation phase: upsert entries from all extraction data.
+ * Uses onConflictDoUpdate on (bookId, name) to update existing entries.
+ * Pure template — no AI provider needed.
+ */
+async function runCompilationPhase(
+  bookId: string,
+  extractionResults: ChapterExtractionResult[],
+  title: string,
+  author: string | null,
+  userId: string
+): Promise<void> {
+  // Group by entity
+  const grouped = groupExtractionsByEntity(extractionResults);
+  const currentNames = new Set(grouped.map((e) => e.name));
+
+  for (const entity of grouped) {
+    const content = compileEntry(entity);
+    const firstChapter = Math.min(...entity.chapterData.map((c) => c.chapterNumber));
+
+    const [upsertedEntry] = await db
+      .insert(entries)
+      .values({
+        bookId,
+        name: entity.name,
+        category: entity.category,
+        aliases: entity.aliases,
+        content,
+        firstAppearanceChapter: firstChapter,
+        significance: entity.significance,
+        tags: entity.tags,
+        isPublic: false,
+        generatedBy: userId,
+      })
+      .onConflictDoUpdate({
+        target: [entries.bookId, entries.name],
+        set: {
+          content,
+          aliases: entity.aliases,
+          category: entity.category,
+          significance: entity.significance,
+          tags: entity.tags,
+          firstAppearanceChapter: firstChapter,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    // Delete existing sources and quotes for this entry, then re-insert
+    await db.delete(entrySources).where(eq(entrySources.entryId, upsertedEntry.id));
+    await db.delete(entryQuotes).where(eq(entryQuotes.entryId, upsertedEntry.id));
+
+    // Batch insert sources from observation blocks
+    const sourceRows: {
+      entryId: string;
+      chapter: number;
+      observation: string;
+      anchor: string;
+      sortOrder: number;
+    }[] = [];
+    for (const ch of entity.chapterData) {
+      let sortIdx = 0;
+      for (const block of ch.blocks) {
+        if (block.type === "observation") {
+          sourceRows.push({
+            entryId: upsertedEntry.id,
+            chapter: ch.chapterNumber,
+            observation: block.text,
+            anchor: block.anchor,
+            sortOrder: sortIdx++,
+          });
+        }
+      }
+    }
+    await batchInsert(entrySources, sourceRows);
+
+    // Batch insert quotes from quote blocks
+    const quoteRows: {
+      entryId: string;
+      text: string;
+      speaker: string;
+      context: string;
+      chapter: number;
+    }[] = [];
+    for (const ch of entity.chapterData) {
+      for (const block of ch.blocks) {
+        if (block.type === "quote") {
+          quoteRows.push({
+            entryId: upsertedEntry.id,
+            text: block.text,
+            speaker: block.speaker,
+            context: block.context,
+            chapter: ch.chapterNumber,
+          });
+        }
+      }
+    }
+    await batchInsert(entryQuotes, quoteRows);
+  }
+
+  // Clean up orphaned entries (names no longer in grouped set)
+  const existingEntries = await db.query.entries.findMany({
+    where: eq(entries.bookId, bookId),
+    columns: { id: true, name: true },
+  });
+  for (const entry of existingEntries) {
+    if (!currentNames.has(entry.name)) {
+      await db.delete(entries).where(eq(entries.id, entry.id));
+    }
+  }
+}
+
 export async function runFullProcessing(
   bookId: string,
   providerName: ProviderName,
@@ -790,10 +1062,8 @@ export async function runFullProcessing(
   userId: string,
   signal?: AbortSignal
 ): Promise<void> {
-  // Create two providers: cheaper for extraction, better for synthesis
   const extractionModel = getExtractionModel(providerName);
   const extractionProvider = createProvider(providerName, keyRecord, extractionModel);
-  const synthesisProvider = createProvider(providerName, keyRecord);
 
   const tracker = createUsageTracker();
 
@@ -804,7 +1074,7 @@ export async function runFullProcessing(
 
   await db
     .update(books)
-    .set({ processingStatus: "processing", updatedAt: new Date() })
+    .set({ processingStatus: "processing", processingError: null, updatedAt: new Date() })
     .where(eq(books.id, bookId));
 
   try {
@@ -813,11 +1083,25 @@ export async function runFullProcessing(
       orderBy: [asc(chapters.chapterNumber)],
     });
 
-    const extractionResults: ChapterExtractionResult[] = [];
+    // Resume: load previously saved extractions
+    const saved = await loadSavedExtractions(bookId);
+    const extractionResults: ChapterExtractionResult[] = [...saved.results];
+    const extractedChapterNumbers = new Set(saved.results.map((r) => r.chapterNumber));
+    const manifest = saved.manifest;
     const failedChapters: number[] = [];
-    const manifest = new Map<string, ManifestEntry>();
+
+    if (extractedChapterNumbers.size > 0) {
+      console.log(
+        `[Chronicle] Resuming: ${extractedChapterNumbers.size}/${allChapters.length} chapters already extracted`
+      );
+    }
 
     for (const chapter of allChapters) {
+      // Skip chapters that already have extractions
+      if (extractedChapterNumbers.has(chapter.chapterNumber)) {
+        continue;
+      }
+
       checkAborted(signal);
 
       // Build manifest string from previously processed chapters
@@ -835,13 +1119,27 @@ export async function runFullProcessing(
           chapter.content,
           tracker,
           manifestStr,
-          signal
+          signal,
+          extractionResults
         );
         extractionResults.push(result);
 
+        // Save extraction immediately (survives crashes)
+        await saveChapterExtraction(bookId, result);
+
         // Update manifest with this chapter's entities
         updateManifest(manifest, chapter.chapterNumber, result.entities);
+
+        // Incremental compilation: compile entries from all extractions so far
+        await runCompilationPhase(bookId, extractionResults, book.title, book.author, userId);
+        await db
+          .update(books)
+          .set({ compiledChapters: chapter.chapterNumber })
+          .where(eq(books.id, bookId));
       } catch (chapterError) {
+        // Re-throw cancellation so the outer catch handles it
+        if (chapterError instanceof ProcessingCancelledError) throw chapterError;
+
         console.error(
           `[Chronicle] Chapter ${chapter.chapterNumber} failed after ${MAX_EXTRACTION_ATTEMPTS} attempts, skipping:`,
           chapterError
@@ -858,7 +1156,7 @@ export async function runFullProcessing(
         .where(eq(books.id, bookId));
     }
 
-    if (failedChapters.length === allChapters.length) {
+    if (extractionResults.length === 0) {
       throw new Error(
         `All ${allChapters.length} chapters failed extraction`
       );
@@ -866,100 +1164,18 @@ export async function runFullProcessing(
 
     checkAborted(signal);
 
-    // Insert chapter summaries (no cueQuestions)
-    const summaryRows: {
-      bookId: string;
-      chapterNumber: number;
-      summary: string;
-    }[] = [];
-    for (const result of extractionResults) {
-      if (result.chapterSummary) {
-        summaryRows.push({
-          bookId,
-          chapterNumber: result.chapterNumber,
-          summary: result.chapterSummary,
-        });
-      }
-    }
-    await batchInsert(chapterSummaries, summaryRows);
-
-    // Group by entity
-    const grouped = groupExtractionsByEntity(extractionResults);
-
-    // Synthesize entries (parallel)
-    await pMap(grouped, async (entity) => {
-      checkAborted(signal);
-
-      const content = await synthesizeEntry(
-        synthesisProvider, entity, book.title, book.author, tracker
-      );
-      const firstChapter = Math.min(...entity.chapterData.map((c) => c.chapterNumber));
-
-      const [newEntry] = await db
-        .insert(entries)
-        .values({
-          bookId,
-          name: entity.name,
-          category: entity.category,
-          aliases: entity.aliases,
-          content,
-          firstAppearanceChapter: firstChapter,
-          significance: entity.significance,
-          tags: entity.tags,
-          isPublic: false,
-          generatedBy: userId,
-        })
-        .returning();
-
-      // Batch insert sources
-      const sourceRows: {
-        entryId: string;
-        chapter: number;
-        observation: string;
-        anchor: string;
-        sortOrder: number;
-      }[] = [];
-      for (const ch of entity.chapterData) {
-        for (let i = 0; i < ch.observations.length; i++) {
-          const obs = ch.observations[i];
-          sourceRows.push({
-            entryId: newEntry.id,
-            chapter: ch.chapterNumber,
-            observation: obs.fact,
-            anchor: obs.anchor,
-            sortOrder: i,
-          });
-        }
-      }
-      await batchInsert(entrySources, sourceRows);
-
-      // Batch insert quotes
-      const quoteRows: {
-        entryId: string;
-        text: string;
-        speaker: string;
-        context: string;
-        chapter: number;
-      }[] = [];
-      for (const ch of entity.chapterData) {
-        for (const quote of ch.quotes) {
-          quoteRows.push({
-            entryId: newEntry.id,
-            text: quote.text,
-            speaker: quote.speaker,
-            context: quote.context,
-            chapter: ch.chapterNumber,
-          });
-        }
-      }
-      await batchInsert(entryQuotes, quoteRows);
-    }, SYNTHESIS_CONCURRENCY);
+    // Compile entries from all extraction results (no AI call needed)
+    await runCompilationPhase(
+      bookId, extractionResults,
+      book.title, book.author, userId
+    );
 
     await db
       .update(books)
       .set({
         processingStatus: "completed",
         processingProgress: allChapters.length,
+        compiledChapters: allChapters.length,
         processingError:
           failedChapters.length > 0
             ? `Chapters ${failedChapters.join(", ")} failed extraction and were skipped`
@@ -968,18 +1184,49 @@ export async function runFullProcessing(
       })
       .where(eq(books.id, bookId));
 
+    // Clean up saved extractions after successful completion
+    await db.delete(chapterExtractions).where(eq(chapterExtractions.bookId, bookId));
+
     logUsageSummary(tracker);
   } catch (error) {
     const isCancelled = error instanceof ProcessingCancelledError;
     const message = error instanceof Error ? error.message : "Unknown error";
-    await db
-      .update(books)
-      .set({
-        processingStatus: "failed",
-        processingError: isCancelled ? "Cancelled by user" : message,
-        updatedAt: new Date(),
-      })
-      .where(eq(books.id, bookId));
+
+    // Check how many extractions we have saved
+    const savedCount = await db.query.chapterExtractions.findMany({
+      where: eq(chapterExtractions.bookId, bookId),
+      columns: { id: true },
+    });
+
+    if (savedCount.length > 0) {
+      // Entries are already compiled incrementally — just set status to partial
+      const totalChapters = await db.query.chapters.findMany({
+        where: eq(chapters.bookId, bookId),
+        columns: { id: true },
+      });
+
+      await db
+        .update(books)
+        .set({
+          processingStatus: "partial",
+          processingError: isCancelled
+            ? `Cancelled by user — ${savedCount.length} of ${totalChapters.length} chapters processed`
+            : `${message} — ${savedCount.length} of ${totalChapters.length} chapters processed`,
+          updatedAt: new Date(),
+        })
+        .where(eq(books.id, bookId));
+    } else {
+      // No extractions at all — mark as failed
+      await db
+        .update(books)
+        .set({
+          processingStatus: "failed",
+          processingError: isCancelled ? "Cancelled by user" : message,
+          updatedAt: new Date(),
+        })
+        .where(eq(books.id, bookId));
+    }
+
     logUsageSummary(tracker);
     if (!isCancelled) throw error;
   } finally {

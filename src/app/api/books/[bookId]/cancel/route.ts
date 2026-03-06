@@ -30,18 +30,29 @@ export async function POST(
     );
   }
 
-  // Signal the abort controller to stop processing
+  // Signal the abort controller — let the processing loop handle status update
   abortProcessing(bookId);
 
-  // Update DB status immediately so the UI reflects cancellation
-  await db
-    .update(books)
-    .set({
-      processingStatus: "failed",
-      processingError: "Cancelled by user",
-      updatedAt: new Date(),
-    })
-    .where(eq(books.id, bookId));
+  // Fallback: if the processing loop hasn't updated status within 10s, force-set failed
+  setTimeout(async () => {
+    try {
+      const current = await db.query.books.findFirst({
+        where: eq(books.id, bookId),
+      });
+      if (current?.processingStatus === "processing") {
+        await db
+          .update(books)
+          .set({
+            processingStatus: "failed",
+            processingError: "Cancelled by user",
+            updatedAt: new Date(),
+          })
+          .where(eq(books.id, bookId));
+      }
+    } catch {
+      // Best-effort fallback
+    }
+  }, 10_000);
 
   return NextResponse.json({ message: "Processing cancelled" });
 }

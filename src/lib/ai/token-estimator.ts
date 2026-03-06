@@ -28,7 +28,7 @@ export function estimateProcessingCost(
   const promptOverhead = chapters.length * 500;
   const estimatedInputTokens = contentTokens + promptOverhead;
 
-  // Output is typically 30-50% of input for extraction, plus synthesis
+  // Output is typically 30-50% of input for extraction
   const estimatedOutputTokens = Math.ceil(estimatedInputTokens * 0.4);
 
   const pricing = PRICING[provider];

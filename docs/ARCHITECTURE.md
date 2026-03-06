@@ -6,7 +6,7 @@ Chronicle is a progress-locked reading companion that processes ePub books throu
 
 ## Database Schema
 
-The database has 10 tables split across four domains: authentication (managed by Auth.js/Drizzle adapter), books & chapters, AI-generated entries with supporting data, and user state (reading progress & API keys). All foreign keys cascade on delete from their parent.
+The database has 11 tables split across four domains: authentication (managed by Auth.js/Drizzle adapter), books & chapters (including incremental extraction cache), AI-generated entries with supporting data, and user state (reading progress & API keys). All foreign keys cascade on delete from their parent.
 
 ```mermaid
 erDiagram
@@ -51,6 +51,7 @@ erDiagram
         integer totalChapters
         processing_status processingStatus
         integer processingProgress
+        integer compiledChapters
         text processingError
         jsonb metadata
         text uploadedBy FK
@@ -68,7 +69,7 @@ erDiagram
     entries {
         text id PK
         text bookId FK
-        text name
+        text name "UK(bookId,name)"
         text category
         text_array aliases
         text content
@@ -101,8 +102,15 @@ erDiagram
     chapter_summaries {
         text id PK
         text bookId FK
-        integer chapterNumber
+        integer chapterNumber UK
         text summary
+    }
+
+    chapter_extractions {
+        text id PK
+        text bookId FK
+        integer chapterNumber UK
+        jsonb data
     }
 
     reading_progress {
@@ -130,6 +138,7 @@ erDiagram
     books ||--o{ chapters : "contains"
     books ||--o{ entries : "has"
     books ||--o{ chapter_summaries : "has"
+    books ||--o{ chapter_extractions : "caches"
     books ||--o{ reading_progress : "tracked in"
     entries ||--o{ entry_quotes : "has"
     entries ||--o{ entry_sources : "has"
@@ -139,7 +148,11 @@ erDiagram
 
 ## Book Processing Pipeline
 
-When a user triggers processing, the system runs a multi-phase pipeline in the background. An `AbortController` allows cancellation at any checkpoint. Large chapters are automatically split into chunks. Extraction uses a two-step approach: structure discovery identifies subjects and paragraph references, then detail extraction runs in parallel batches grouped by paragraph locality (subjects referencing nearby text share a batch, eliminating duplicate input tokens). Synthesis also runs in parallel (5 concurrent).
+When a user triggers processing, the system runs an incremental pipeline in the background. An `AbortController` allows cancellation at any checkpoint. Large chapters are automatically split into chunks. Extraction uses a two-step approach: structure discovery identifies subjects and paragraph references, then detail extraction runs in parallel batches grouped by paragraph locality (subjects referencing nearby text share a batch, eliminating duplicate input tokens). Detail extraction produces typed content blocks (summary, observation, quote, appearance) and receives previous blocks for incremental context. Compilation is a deterministic template — no AI call needed.
+
+**Incremental compilation**: After each chapter's extraction, compilation runs on all extractions so far using upserts (`onConflictDoUpdate` on `entries(bookId, name)`). This makes entries available to users immediately — they can browse the Codex and read entries while processing continues. The chapter selector limits selection to compiled chapters. A final compilation after the loop ensures consistency.
+
+**Incremental persistence**: Each chapter's extraction result is saved to `chapter_extractions` immediately after completion. On resume, previously extracted chapters are loaded and skipped. On error/cancel with partial extractions, entries from incremental compilation are already available and status is set to `"partial"`. Saved extractions are cleaned up after successful full completion.
 
 ```mermaid
 flowchart TD
@@ -151,8 +164,11 @@ flowchart TD
     F --> G[Set status = processing]
 
     subgraph Extraction["Phase 1: Multi-Pass Extraction (cheap model)"]
-        G --> H[Load all chapters from DB]
-        H --> I[For each chapter — sequential]
+        G --> LOAD[Load saved extractions from DB<br/>rebuild manifest, skip completed]
+        LOAD --> H[Load all chapters from DB]
+        H --> SKIP{Already extracted?}
+        SKIP -- Yes --> P
+        SKIP -- No --> I[For each remaining chapter]
         I --> J{Chapter too large?}
         J -- Yes --> K[Split into chunks]
         J -- No --> L1
@@ -161,40 +177,39 @@ flowchart TD
             L1[Step 1: Number paragraphs]
             L1 --> L2[Step 2: Structure discovery<br/>subjects + paragraph refs + significance]
             L2 --> L3[Step 3: Batch by paragraph locality<br/>sort by centroid, pack to output budget]
-            L3 --> L4[Step 3: Detail extraction<br/>parallel ×3, dynamic maxTokens<br/>aliases, tags, observations, quotes]
+            L3 --> L4[Step 3: Detail extraction<br/>parallel ×3, dynamic maxTokens<br/>aliases, content blocks + prev context]
         end
 
         K --> L1
-        L4 --> M2[Update manifest + processingProgress]
-        M2 --> P{More chapters?}
+        L4 --> SAVE[Save to chapter_extractions + chapter_summaries]
+        SAVE --> M2[Update manifest + processingProgress]
+        M2 --> INCR[Incremental compilation<br/>upsert entries from all extractions so far]
+        INCR --> COMPILED[Update compiledChapters]
+        COMPILED --> P{More chapters?}
         P -- Yes --> Q{Aborted?}
-        Q -- No --> I
-        Q -- Yes --> CANCEL[Set status = failed<br/>error: Cancelled by user]
+        Q -- No --> SKIP
+        Q -- Yes --> PARTIAL_CHECK
         P -- No --> R{Aborted?}
-        R -- Yes --> CANCEL
+        R -- Yes --> PARTIAL_CHECK
     end
 
-    subgraph Summaries["Phase 1b: Chapter Summaries"]
-        R -- No --> R2[Insert chapter_summaries]
-    end
-
-    subgraph Grouping["Phase 2: Entity Grouping"]
-        R2 --> S[Deduplicate entity names]
-        S --> T[Group observations by canonical entity<br/>significance = max across chapters]
-    end
-
-    subgraph Synthesis["Phase 3: Synthesis (full model, parallel ×5)"]
-        T --> U[For each grouped entity — parallel ×5]
-        U --> V{Aborted?}
-        V -- Yes --> CANCEL
-        V -- No --> W[Generate encyclopedia entry]
-        W --> X[Insert entry + sources + quotes]
+    subgraph CompilationPhase["Final Compilation (consistency pass)"]
+        R -- No --> S[Deduplicate + group entities]
+        S --> U[For each grouped entity]
+        U --> W[compileEntry — deterministic template]
+        W --> X[Upsert entry + replace sources + quotes]
         X --> Y{More entities?}
         Y -- Yes --> U
+        Y -- No --> ORPHAN[Remove orphaned entries]
     end
 
-    Y -- No --> AB[Set status = completed]
+    ORPHAN --> CLEAN[Clean up chapter_extractions]
+    CLEAN --> AB[Set status = completed]
     AB --> AC[Log token usage summary]
+
+    PARTIAL_CHECK{Extractions saved?}
+    PARTIAL_CHECK -- Yes --> PSTATUS[Set status = partial<br/>entries already compiled incrementally]
+    PARTIAL_CHECK -- No --> FAIL[Set status = failed]
 ```
 
 ---
@@ -251,7 +266,7 @@ sequenceDiagram
 
 ## Processing State Machine
 
-The `processingStatus` column on the `books` table tracks the lifecycle of AI processing. The enum has four values with the following transitions:
+The `processingStatus` column on the `books` table tracks the lifecycle of AI processing. The enum has five values with the following transitions:
 
 ```mermaid
 stateDiagram-v2
@@ -260,14 +275,26 @@ stateDiagram-v2
     pending --> processing : POST /process triggered
 
     processing --> completed : All phases finish successfully
-    processing --> failed : Unhandled error thrown
+    processing --> partial : Error/cancel with some extractions saved + synthesis succeeds
+    processing --> failed : Zero extractions or all phases fail
 
+    partial --> processing : User continues processing
     failed --> processing : User retries processing
 
+    note right of partial
+        Partial: extractions are persisted
+        per-chapter. Entries from completed
+        chapters are available (compiled
+        incrementally). Resume skips
+        already-extracted chapters.
+    end note
+
     note right of processing
-        Cancellation: POST /cancel sets
-        status to failed with
-        error "Cancelled by user"
+        Entries are available during processing
+        via incremental compilation after each
+        chapter. compiledChapters tracks how
+        far entries cover. Cancellation via
+        POST /cancel signals abort.
     end note
 
     completed --> [*]
@@ -307,7 +334,7 @@ flowchart LR
         PROV["provider interface"]
         ANTH["anthropic adapter"]
         OAI["openai adapter"]
-        PROMPTS["prompts/<br/>extraction, synthesis,<br/>section-guidelines"]
+        PROMPTS["prompts/<br/>extraction,<br/>section-guidelines"]
         VAL["validation"]
     end
 

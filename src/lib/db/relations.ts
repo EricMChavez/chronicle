@@ -5,6 +5,7 @@ import {
   sessions,
   books,
   chapters,
+  chapterExtractions,
   entries,
   entryQuotes,
   entrySources,
@@ -36,6 +37,7 @@ export const booksRelations = drizzleRelations(books, ({ one, many }) => ({
     references: [users.id],
   }),
   chapters: many(chapters),
+  chapterExtractions: many(chapterExtractions),
   entries: many(entries),
   chapterSummaries: many(chapterSummaries),
   readingProgress: many(readingProgress),
@@ -44,6 +46,16 @@ export const booksRelations = drizzleRelations(books, ({ one, many }) => ({
 export const chaptersRelations = drizzleRelations(chapters, ({ one }) => ({
   book: one(books, { fields: [chapters.bookId], references: [books.id] }),
 }));
+
+export const chapterExtractionsRelations = drizzleRelations(
+  chapterExtractions,
+  ({ one }) => ({
+    book: one(books, {
+      fields: [chapterExtractions.bookId],
+      references: [books.id],
+    }),
+  })
+);
 
 export const entriesRelations = drizzleRelations(entries, ({ one, many }) => ({
   book: one(books, { fields: [entries.bookId], references: [books.id] }),
@@ -109,6 +121,7 @@ export const relations = {
   sessionsRelations,
   booksRelations,
   chaptersRelations,
+  chapterExtractionsRelations,
   entriesRelations,
   entryQuotesRelations,
   entrySourcesRelations,

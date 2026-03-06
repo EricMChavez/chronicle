@@ -22,6 +22,20 @@
       "when": 1772938800000,
       "tag": "0002_replace_type_with_category",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1772755932915,
+      "tag": "0003_pink_goliath",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1772762838834,
+      "tag": "0004_fine_argent",
+      "breakpoints": true
     }
   ]
 }

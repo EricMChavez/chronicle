@@ -55,8 +55,21 @@ export function expandRanges(input: string, totalParagraphs?: number): number[] 
 
 // AI response validation schemas
 
-// Shared sub-schemas
-export const extractionQuoteSchema = z.object({
+// --- Content Block schemas (discriminated union) ---
+
+const summaryBlockSchema = z.object({
+  type: z.literal("summary"),
+  text: z.string(),
+});
+
+const observationBlockSchema = z.object({
+  type: z.literal("observation"),
+  text: z.string(),
+  anchor: z.string().default(""),
+});
+
+const quoteBlockSchema = z.object({
+  type: z.literal("quote"),
   text: z.string().transform((t) => {
     const words = t.split(/\s+/);
     return words.length > 30 ? words.slice(0, 30).join(" ") + "…" : t;
@@ -65,11 +78,19 @@ export const extractionQuoteSchema = z.object({
   context: z.string().default(""),
 });
 
-// Breadth-first extraction — discrete facts with search anchors
-export const extractionObservationSchema = z.object({
-  fact: z.string(),
-  anchor: z.string().default(""),
+const appearanceBlockSchema = z.object({
+  type: z.literal("appearance"),
+  text: z.string(),
 });
+
+export const contentBlockSchema = z.discriminatedUnion("type", [
+  summaryBlockSchema,
+  observationBlockSchema,
+  quoteBlockSchema,
+  appearanceBlockSchema,
+]);
+
+export type ContentBlock = z.infer<typeof contentBlockSchema>;
 
 // Structure discovery response (Step 2)
 export function createStructureSubjectSchema(totalParagraphs?: number) {
@@ -102,9 +123,7 @@ export type StructureSubject = z.infer<typeof structureSubjectSchema>;
 export const detailSubjectSchema = z.object({
   name: z.string(),
   aliases: z.array(z.string()).default([]).catch([]),
-  summary: z.string().default("").catch(""),
-  observations: z.array(extractionObservationSchema).default([]).catch([]),
-  quotes: z.array(extractionQuoteSchema).default([]).catch([]),
+  blocks: z.array(contentBlockSchema).default([]).catch([]),
 });
 
 export const detailResponseSchema = z.object({
@@ -121,9 +140,7 @@ export const extractionEntitySchema = z.object({
   category: z.string(),
   significance: z.number().int().min(1).max(10).default(5).catch(5),
   tags: z.array(z.string()).default([]).catch([]),
-  summary: z.string().default("").catch(""),
-  observations: z.array(extractionObservationSchema).default([]).catch([]),
-  quotes: z.array(extractionQuoteSchema).default([]).catch([]),
+  blocks: z.array(contentBlockSchema).default([]).catch([]),
 });
 
 export type ExtractionEntity = z.infer<typeof extractionEntitySchema>;

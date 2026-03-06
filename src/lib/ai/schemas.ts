@@ -36,28 +36,21 @@ export const detailJsonSchema = {
             type: "array" as const,
             items: { type: "string" as const },
           },
-          summary: { type: "string" as const },
-          observations: {
+          blocks: {
             type: "array" as const,
             items: {
               type: "object" as const,
               properties: {
-                fact: { type: "string" as const },
-                anchor: { type: "string" as const },
-              },
-              required: ["fact"],
-            },
-          },
-          quotes: {
-            type: "array" as const,
-            items: {
-              type: "object" as const,
-              properties: {
+                type: {
+                  type: "string" as const,
+                  enum: ["summary", "observation", "quote", "appearance"],
+                },
                 text: { type: "string" as const },
+                anchor: { type: "string" as const },
                 speaker: { type: "string" as const },
                 context: { type: "string" as const },
               },
-              required: ["text"],
+              required: ["type", "text"],
             },
           },
         },

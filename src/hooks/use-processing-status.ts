@@ -3,9 +3,10 @@
 import { useEffect, useState, useCallback } from "react";
 
 interface ProcessingStatus {
-  status: "pending" | "processing" | "completed" | "failed";
+  status: "pending" | "processing" | "completed" | "partial" | "failed";
   progress: number;
   totalChapters: number;
+  compiledChapters: number;
   error: string | null;
 }
 
@@ -14,6 +15,7 @@ export function useProcessingStatus(bookId: string, enabled: boolean = true) {
     status: "pending",
     progress: 0,
     totalChapters: 0,
+    compiledChapters: 0,
     error: null,
   });
 
@@ -27,7 +29,7 @@ export function useProcessingStatus(bookId: string, enabled: boolean = true) {
         const parsed = JSON.parse(event.data);
         setData(parsed);
 
-        if (parsed.status === "completed" || parsed.status === "failed") {
+        if (parsed.status === "completed" || parsed.status === "partial" || parsed.status === "failed") {
           eventSource.close();
         }
       } catch {

@@ -79,6 +79,11 @@ export default async function BookDetailPage({
           bookId={bookId}
           chapters={bookChapters}
           currentChapter={currentChapter}
+          maxChapter={
+            book.processingStatus === "completed"
+              ? undefined
+              : book.compiledChapters || undefined
+          }
         />
       </div>
 
@@ -91,6 +96,11 @@ export default async function BookDetailPage({
         {book.processingStatus === "pending" && (
           <div className="mt-3">
             <ProcessBookButton bookId={bookId} />
+          </div>
+        )}
+        {book.processingStatus === "partial" && (
+          <div className="mt-3">
+            <ProcessBookButton bookId={bookId} label="Continue Processing" />
           </div>
         )}
         {book.processingStatus === "failed" && (

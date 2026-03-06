@@ -59,11 +59,13 @@ export async function GET(
         status: book.processingStatus,
         progress: book.processingProgress,
         totalChapters: book.totalChapters,
+        compiledChapters: book.compiledChapters,
         error: book.processingError,
       });
 
       if (
         book.processingStatus === "completed" ||
+        book.processingStatus === "partial" ||
         book.processingStatus === "failed"
       ) {
         close();
@@ -86,11 +88,13 @@ export async function GET(
             status: book.processingStatus,
             progress: book.processingProgress,
             totalChapters: book.totalChapters,
+            compiledChapters: book.compiledChapters,
             error: book.processingError,
           });
 
           if (
             book.processingStatus === "completed" ||
+            book.processingStatus === "partial" ||
             book.processingStatus === "failed"
           ) {
             close();

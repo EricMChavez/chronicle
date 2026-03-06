@@ -12,12 +12,14 @@ interface ChapterSelectorProps {
   bookId: string;
   chapters: Chapter[];
   currentChapter: number;
+  maxChapter?: number;
 }
 
 export function ChapterSelector({
   bookId,
   chapters,
   currentChapter,
+  maxChapter,
 }: ChapterSelectorProps) {
   const [isPending, startTransition] = useTransition();
 
@@ -43,12 +45,21 @@ export function ChapterSelector({
         disabled={isPending}
         className="rounded-lg border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-sm text-zinc-200 focus:border-amber-600 focus:outline-none focus:ring-1 focus:ring-amber-600 disabled:opacity-50"
       >
-        {chapters.map((ch) => (
-          <option key={ch.chapterNumber} value={ch.chapterNumber}>
-            Ch. {ch.chapterNumber}
-            {ch.title ? `: ${ch.title}` : ""}
-          </option>
-        ))}
+        {chapters.map((ch) => {
+          const disabled =
+            maxChapter !== undefined && ch.chapterNumber > maxChapter;
+          return (
+            <option
+              key={ch.chapterNumber}
+              value={ch.chapterNumber}
+              disabled={disabled}
+            >
+              Ch. {ch.chapterNumber}
+              {ch.title ? `: ${ch.title}` : ""}
+              {disabled ? " (processing...)" : ""}
+            </option>
+          );
+        })}
       </select>
       {isPending && (
         <div className="h-4 w-4 animate-spin rounded-full border-2 border-zinc-600 border-t-amber-500" />

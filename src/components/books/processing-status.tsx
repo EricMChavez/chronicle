@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { useProcessingStatus } from "@/hooks/use-processing-status";
 
 interface ProcessingStatusProps {
@@ -16,13 +17,21 @@ export function ProcessingStatus({
 }: ProcessingStatusProps) {
   const shouldPoll =
     initialStatus === "processing" || initialStatus === "pending";
-  const { status, progress, totalChapters, error } = useProcessingStatus(
-    bookId,
-    shouldPoll
-  );
+  const { status, progress, totalChapters, compiledChapters, error } =
+    useProcessingStatus(bookId, shouldPoll);
   const [cancelling, setCancelling] = useState(false);
+  const router = useRouter();
+  const prevCompiledRef = useRef(compiledChapters);
 
   const displayStatus = shouldPoll ? status : initialStatus;
+
+  // Refresh server components when compiledChapters increases
+  useEffect(() => {
+    if (compiledChapters > prevCompiledRef.current) {
+      prevCompiledRef.current = compiledChapters;
+      router.refresh();
+    }
+  }, [compiledChapters, router]);
 
   const handleCancel = async () => {
     setCancelling(true);
@@ -46,6 +55,22 @@ export function ProcessingStatus({
         {error && (
           <p className="mt-2 text-xs text-amber-400">{error}</p>
         )}
+      </div>
+    );
+  }
+
+  if (displayStatus === "partial") {
+    return (
+      <div className="rounded-lg border border-amber-800 bg-amber-950/50 p-4">
+        <p className="text-sm font-medium text-amber-400">
+          Partially processed
+        </p>
+        {error && (
+          <p className="mt-1 text-xs text-amber-500">{error}</p>
+        )}
+        <p className="mt-2 text-xs text-zinc-400">
+          Entries from completed chapters are available. You can continue processing to extract the remaining chapters.
+        </p>
       </div>
     );
   }
@@ -94,6 +119,11 @@ export function ProcessingStatus({
         </div>
         <p className="mt-2 text-xs text-zinc-400">
           Processing chapter {progress} of {totalChapters}...
+          {compiledChapters > 0 && (
+            <span className="ml-2 text-amber-500">
+              Entries available through chapter {compiledChapters}
+            </span>
+          )}
         </p>
       </div>
     );

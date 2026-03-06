@@ -104,28 +104,15 @@ export function mergeExtractionResults(
 
       if (matchKey) {
         const existing = merged.get(matchKey)!;
-        // Merge summaries
-        if (entity.summary) {
-          existing.summary = existing.summary
-            ? `${existing.summary} ${entity.summary}`
-            : entity.summary;
-        }
-        // Merge observations, deduplicating by fact similarity
-        for (const obs of entity.observations) {
-          const isDuplicate = existing.observations.some(
-            (eo) => levenshtein(eo.fact.toLowerCase(), obs.fact.toLowerCase()) <= threshold
+        // Merge blocks, deduplicating by (type, text) pair
+        for (const block of entity.blocks) {
+          const isDuplicate = existing.blocks.some(
+            (eb) =>
+              eb.type === block.type &&
+              levenshtein(eb.text.toLowerCase(), block.text.toLowerCase()) <= threshold
           );
           if (!isDuplicate) {
-            existing.observations.push(obs);
-          }
-        }
-        // Merge quotes, deduplicating by text
-        for (const quote of entity.quotes) {
-          const isDuplicate = existing.quotes.some(
-            (eq) => levenshtein(eq.text.toLowerCase(), quote.text.toLowerCase()) <= threshold
-          );
-          if (!isDuplicate) {
-            existing.quotes.push(quote);
+            existing.blocks.push(block);
           }
         }
         // Merge aliases

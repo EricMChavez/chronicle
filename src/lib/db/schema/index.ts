@@ -1,5 +1,5 @@
 export { users, accounts, sessions, verificationTokens } from "./auth";
-export { books, chapters, processingStatusEnum } from "./books";
+export { books, chapters, chapterExtractions, processingStatusEnum } from "./books";
 export {
   entries,
   entryQuotes,

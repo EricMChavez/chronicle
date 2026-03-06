@@ -1,3 +1,5 @@
+import type { ContentBlock } from "@/lib/utils/validation";
+
 /**
  * Build the system prompt for chapter summarization (before structure discovery).
  */
@@ -75,33 +77,50 @@ For each entity found in this chapter, record:
 
 /**
  * Build the system prompt for Step 3: Detail Extraction.
- * Called per batch — extracts aliases, tags, observations, and quotes for specific subjects.
+ * Called per batch — extracts content blocks for specific subjects.
  */
 export function buildDetailExtractionPrompt(
   title: string,
   author: string | null,
   chapterNumber: number,
-  allSubjectNames: string[]
+  allSubjectNames: string[],
+  hasPreviousBlocks?: boolean
 ): string {
   const authorStr = author ? ` by ${author}` : "";
   const subjectList = allSubjectNames.map((n) => `[${n}]`).join(", ");
+
+  const incrementalNote = hasPreviousBlocks
+    ? `\n\n## Incremental Rules
+
+You will be given previous content blocks for some subjects from earlier chapters. For these subjects:
+- Write only NEW information from THIS chapter. Do not repeat what the previous blocks already cover.
+- Summary blocks should describe what happens to this subject in THIS chapter specifically.
+- If nothing new is revealed, you may omit that block type entirely.`
+    : "";
 
   return `You are taking detailed notes on specific entities from chapter ${chapterNumber} of "${title}"${authorStr} for a reading companion app.
 
 You will be given one or more subjects to analyze, along with the relevant paragraphs where they appear.
 
-## What to Extract Per Subject
+## Content Blocks
 
+For each subject, produce an array of typed content blocks. Each block has a \`type\` and \`text\`, plus optional fields depending on type:
+
+| Type | Purpose | Extra Fields |
+|------|---------|-------------|
+| \`summary\` | Prose about this subject's role in THIS chapter. Length proportional to significance: 1-2 sentences for minor, 2-4 for major. | — |
+| \`observation\` | A discrete noteworthy fact the summary doesn't cover. 0-2 per subject. | \`anchor\` (paragraph ref, e.g. "P3") |
+| \`quote\` | An exact, vivid quote. 0-1 per subject. Max 30 words. | \`speaker\`, \`context\` |
+| \`appearance\` | Physical or sensory description of this subject. Only when the text provides concrete details. | — |
+
+**Every subject must have at least one \`summary\` block.** Other types are optional.
+
+Also extract:
 - **aliases**: Other names, nicknames, or titles for this entity
-- **summary**: A brief factual summary of this subject's role in the chapter. Length should be proportional to significance: 1-2 sentences for minor subjects, 2-4 sentences for major ones. When referencing OTHER entities, use bracket syntax: [Entity Name].
-- **observations**: Only especially noteworthy discrete facts that the summary doesn't cover. 0-2 per subject — most subjects need zero. Each observation has:
-  - **fact**: A single, specific observation. Use bracket syntax for cross-references: [Entity Name].
-  - **anchor**: The paragraph reference where this fact appears (e.g., "P3")
-- **quotes**: Only especially vivid or memorable exact quotes. 0-1 per subject — most subjects need zero. Max 30 words each.
 
 ## Cross-Reference Syntax
 
-When an observation mentions another entity from this book, wrap its name in brackets: [Entity Name].
+When a block mentions another entity from this book, wrap its name in brackets: [Entity Name].
 Known entities in this book: ${subjectList}
 
 Only use bracket references for entities in the list above.
@@ -110,7 +129,7 @@ Only use bracket references for entities in the list above.
 
 1. **Show, don't tell.** Record observable facts, actions, dialogue, descriptions — not interpretations.
 2. **Exact quotes only.** Maximum 30 words per quote.
-3. **Be concise.** Focus on what's most notable and revealing about each subject.`;
+3. **Be concise.** Focus on what's most notable and revealing about each subject.${incrementalNote}`;
 }
 
 /**
@@ -121,12 +140,34 @@ export function buildStructureUserMessage(numberedText: string): string {
 }
 
 /**
+ * Render previous blocks compactly for inclusion in the prompt.
+ */
+function renderPreviousBlocks(blocks: ContentBlock[]): string {
+  return blocks
+    .map((b) => {
+      switch (b.type) {
+        case "summary":
+          return `  [summary] ${b.text}`;
+        case "observation":
+          return `  [observation] ${b.text}${b.anchor ? ` (${b.anchor})` : ""}`;
+        case "quote":
+          return `  [quote] "${b.text}" — ${b.speaker}${b.context ? ` (${b.context})` : ""}`;
+        case "appearance":
+          return `  [appearance] ${b.text}`;
+      }
+    })
+    .join("\n");
+}
+
+/**
  * Build the user message for detail extraction (Step 3).
  * Includes the subjects to analyze and their relevant paragraph texts.
+ * Optionally includes previous blocks for incremental extraction.
  */
 export function buildDetailUserMessage(
   subjects: { name: string; category: string; paragraphs: number[] }[],
-  paragraphTexts: Map<number, string>
+  paragraphTexts: Map<number, string>,
+  previousBlocks?: Map<string, ContentBlock[]>
 ): string {
   const subjectLines = subjects
     .map((s) => `- ${s.name} (${s.category}): paragraphs ${s.paragraphs.join(", ")}`)
@@ -150,7 +191,25 @@ export function buildDetailUserMessage(
     .filter(Boolean)
     .join("\n\n");
 
-  return `## Subjects to Analyze\n\n${subjectLines}\n\n## Relevant Paragraphs\n\n${paragraphSection}`;
+  let result = `## Subjects to Analyze\n\n${subjectLines}\n\n## Relevant Paragraphs\n\n${paragraphSection}`;
+
+  // Append previous content for incremental extraction
+  if (previousBlocks && previousBlocks.size > 0) {
+    const previousSection = subjects
+      .map((s) => {
+        const blocks = previousBlocks.get(s.name.toLowerCase());
+        if (!blocks || blocks.length === 0) return null;
+        return `### ${s.name}\n${renderPreviousBlocks(blocks)}`;
+      })
+      .filter(Boolean)
+      .join("\n\n");
+
+    if (previousSection) {
+      result += `\n\n## Previous Content (do not repeat)\n\n${previousSection}`;
+    }
+  }
+
+  return result;
 }
 
 /**

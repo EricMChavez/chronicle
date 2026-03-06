@@ -5,6 +5,7 @@ import {
   timestamp,
   integer,
   jsonb,
+  unique,
 } from "drizzle-orm/pg-core";
 import { users } from "./auth";
 
@@ -12,6 +13,7 @@ export const processingStatusEnum = pgEnum("processing_status", [
   "pending",
   "processing",
   "completed",
+  "partial",
   "failed",
 ]);
 
@@ -32,6 +34,7 @@ export const books = pgTable("books", {
   totalChapters: integer().notNull().default(0),
   processingStatus: processingStatusEnum().notNull().default("pending"),
   processingProgress: integer().notNull().default(0),
+  compiledChapters: integer().notNull().default(0),
   processingError: text(),
   metadata: jsonb().$type<Record<string, unknown>>(),
   uploadedBy: text()
@@ -54,3 +57,19 @@ export const chapters = pgTable("chapters", {
   wordCount: integer().notNull().default(0),
   createdAt: timestamp({ mode: "date" }).defaultNow().notNull(),
 });
+
+export const chapterExtractions = pgTable(
+  "chapter_extractions",
+  {
+    id: text()
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    bookId: text()
+      .notNull()
+      .references(() => books.id, { onDelete: "cascade" }),
+    chapterNumber: integer().notNull(),
+    data: jsonb().notNull(),
+    createdAt: timestamp({ mode: "date" }).defaultNow().notNull(),
+  },
+  (t) => [unique().on(t.bookId, t.chapterNumber)]
+);
